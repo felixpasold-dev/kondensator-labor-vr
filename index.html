@@ -96,6 +96,8 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
 renderer.setSize(innerWidth, innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.xr.enabled = true;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.xr.setReferenceSpaceType('local');
 document.body.prepend(renderer.domElement);
 const stereo = new StereoEffect(renderer);
@@ -114,7 +116,10 @@ world.position.y = -1.6; // Augenhöhe 1,6 m; die Kamera bleibt im Ursprung
 scene.add(world);
 
 scene.add(new THREE.HemisphereLight(0xffffff, 0x8792a0, 0.9));
-const sun = new THREE.DirectionalLight(0xffffff, 1.5); sun.position.set(1, 3, 2); scene.add(sun);
+const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.set(0.7, 1.7, 0.5); scene.add(sun);
+sun.target.position.set(0, -0.7, -0.85); scene.add(sun.target);
+sun.castShadow = true; sun.shadow.mapSize.set(1024, 1024); sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.015;
+Object.assign(sun.shadow.camera, { left: -1.1, right: 1.1, top: 1.1, bottom: -1.1, near: 0.1, far: 6 });
 const fill = new THREE.DirectionalLight(0xdfe8ff, 0.4); fill.position.set(-2, 1.5, 1); scene.add(fill);
 
 // ------------------------------------------------------------ Materialien & Helfer
@@ -128,16 +133,20 @@ function signTexture(sign) {
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 const M = {
-  bench: new THREE.MeshStandardMaterial({ color: 0xcdd3d9, roughness: 0.6 }),
-  benchEdge: new THREE.MeshStandardMaterial({ color: 0x2b323a, roughness: 0.6 }),
-  floor: new THREE.MeshStandardMaterial({ color: 0xb3bbc4, roughness: 0.95 }),
-  wall: new THREE.MeshStandardMaterial({ color: 0xe6eaee, roughness: 1 }),
+  bench: new THREE.MeshStandardMaterial({ color: 0x2c333b, roughness: 0.78 }),
+  benchTrim: new THREE.MeshStandardMaterial({ color: 0x9aa4ae, metalness: 0.6, roughness: 0.35 }),
+  benchEdge: new THREE.MeshStandardMaterial({ color: 0x1f252b, roughness: 0.6 }),
+  floor: new THREE.MeshStandardMaterial({ color: 0xa3acb6, roughness: 0.95 }),
+  wall: new THREE.MeshStandardMaterial({ color: 0xeef1f4, roughness: 1 }),
   alu: new THREE.MeshStandardMaterial({ color: 0xd6dade, metalness: 1, roughness: 0.3 }),
   steel: new THREE.MeshStandardMaterial({ color: 0xb9bec4, metalness: 1, roughness: 0.25 }),
   brass: new THREE.MeshStandardMaterial({ color: 0xcaa04a, metalness: 1, roughness: 0.3 }),
   castIron: new THREE.MeshStandardMaterial({ color: 0x3a4149, metalness: 0.5, roughness: 0.5 }),
   ebonite: new THREE.MeshStandardMaterial({ color: 0x18191b, roughness: 0.45 }),
-  casing: new THREE.MeshStandardMaterial({ color: 0x46515d, roughness: 0.55, metalness: 0.2 }),
+  casing: new THREE.MeshStandardMaterial({ color: 0xd8dde2, roughness: 0.5 }),
+  casingBase: new THREE.MeshStandardMaterial({ color: 0x55606b, roughness: 0.5 }),
+  front: new THREE.MeshStandardMaterial({ color: 0x1d242b, roughness: 0.5 }),
+  yellow: new THREE.MeshStandardMaterial({ color: 0xe0a21e, roughness: 0.4 }),
   casing2: new THREE.MeshStandardMaterial({ color: 0xe9ecef, roughness: 0.5 }),
   insul: new THREE.MeshPhysicalMaterial({ color: 0xa93421, roughness: 0.15, transparent: true, opacity: 0.9, clearcoat: 1 }),
   red: new THREE.MeshStandardMaterial({ color: 0xcf3a2e, roughness: 0.4 }),
@@ -153,7 +162,8 @@ const slabMats = {
 };
 const fieldMat = new THREE.MeshBasicMaterial({ color: 0xe39a1c, transparent: true, opacity: 0.8, depthWrite: false });
 
-const mesh = (geo, mat) => new THREE.Mesh(geo, mat);
+const mesh = (geo, mat) => { const m = new THREE.Mesh(geo, mat); m.castShadow = m.receiveShadow = true; return m; };
+const flat = m => { m.castShadow = m.receiveShadow = false; return m; };
 const cyl = (rt, rb, h, mat, seg = 24) => mesh(new THREE.CylinderGeometry(rt, rb, h, seg), mat);
 const box = (w, h, d, mat) => mesh(new THREE.BoxGeometry(w, h, d), mat);
 const sph = (r, mat) => mesh(new THREE.SphereGeometry(r, 20, 14), mat);
@@ -183,7 +193,7 @@ function canvasPlane(wm, hm, pw, ph, draw, transparent = false) {
   const cv = document.createElement('canvas'); cv.width = pw; cv.height = ph;
   const g = cv.getContext('2d');
   const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = maxAniso;
-  const m = mesh(new THREE.PlaneGeometry(wm, hm), new THREE.MeshBasicMaterial({ map: tex, toneMapped: false, transparent }));
+  const m = flat(mesh(new THREE.PlaneGeometry(wm, hm), new THREE.MeshBasicMaterial({ map: tex, toneMapped: false, transparent })));
   const obj = { mesh: m, g, pw, ph, redraw() { g.clearRect(0, 0, pw, ph); draw(g, pw, ph); tex.needsUpdate = true; } };
   obj.redraw(); return obj;
 }
@@ -193,15 +203,15 @@ function canvasPlane(wm, hm, pw, ph, draw, transparent = false) {
   const floor = mesh(new THREE.PlaneGeometry(10, 10), M.floor); floor.rotation.x = -Math.PI / 2; world.add(floor);
   const wall = mesh(new THREE.PlaneGeometry(10, 4), M.wall); wall.position.set(0, 2, -2.4); world.add(wall);
   for (const sx of [-1, 1]) { const w = mesh(new THREE.PlaneGeometry(6, 4), M.wall); w.rotation.y = -sx * Math.PI / 2; w.position.set(sx * 3, 2, 0.4); world.add(w); }
-  put(world, box(1.9, 0.04, 0.75, M.bench), 0, 0.88, -0.85);
-  put(world, box(1.92, 0.02, 0.77, M.benchEdge), 0, 0.85, -0.85);
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) put(world, box(0.05, 0.84, 0.05, M.benchEdge), sx * 0.9, 0.42, -0.85 + sz * 0.32);
-  put(world, box(1.8, 0.08, 0.02, M.benchEdge), 0, 0.8, -0.49);
+  put(world, box(1.9, 0.036, 0.75, M.bench), 0, 0.882, -0.85);
+  put(world, box(1.912, 0.012, 0.762, M.benchTrim), 0, 0.858, -0.85);
+  put(world, box(1.86, 0.1, 0.72, M.benchEdge), 0, 0.8, -0.85);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) put(world, box(0.05, 0.76, 0.05, M.benchEdge), sx * 0.9, 0.38, -0.85 + sz * 0.32);
 }
 
 // ------------------------------------------------------------ Plattenkondensator
-const capG = new THREE.Group(); capG.position.set(0.02, 0.9, -0.86); capG.rotation.y = -0.3; world.add(capG);
-put(capG, box(0.52, 0.012, 0.045, M.castIron), 0, 0.006, 0); // Schiene
+const capG = new THREE.Group(); capG.position.set(0.02, 0.9, -0.86); capG.rotation.y = -0.35; world.add(capG);
+put(capG, box(0.52, 0.012, 0.045, M.alu), 0, 0.006, 0); // Schiene
 
 class Plate {
   constructor(side) {
@@ -243,13 +253,13 @@ function rebuildField() {
   const coneGeo = new THREE.ConeGeometry(0.0042, 0.011, 10); coneGeo.rotateZ(-Math.PI / 2);
   for (let i = 0; i < 19; i++) {
     const rr2 = r * 0.75 * Math.sqrt((i + 0.5) / 19), th = i * 2.39996;
-    put(fieldG, mesh(lineGeo, fieldMat), 0, rr2 * Math.sin(th), rr2 * Math.cos(th));
-    if (st.d >= 1.5 && st.med === 'air') put(fieldG, mesh(coneGeo, fieldMat), 0, rr2 * Math.sin(th), rr2 * Math.cos(th));
+    put(fieldG, flat(mesh(lineGeo, fieldMat)), 0, rr2 * Math.sin(th), rr2 * Math.cos(th));
+    if (st.d >= 1.5 && st.med === 'air') put(fieldG, flat(mesh(coneGeo, fieldMat)), 0, rr2 * Math.sin(th), rr2 * Math.cos(th));
   }
   if (slab) { capG.remove(slab); slab.geometry.dispose(); slab = null; }
   if (st.med !== 'air') {
     const t = SLAB_T / 100 - 0.0006, s = r * 2.2;
-    slab = mesh(new THREE.BoxGeometry(t, s, s), slabMats[st.med]);
+    slab = flat(mesh(new THREE.BoxGeometry(t, s, s), slabMats[st.med]));
     slab.position.set(-d / 2 + SLAB_T / 200, 0.25, 0); // liegt an der Plusplatte an
     capG.add(slab);
   }
@@ -260,27 +270,41 @@ const dLabel = canvasPlane(0.13, 0.04, 320, 98, (g, w, h) => {
 }, true);
 const dSprite = dLabel.mesh; world.add(dSprite);
 
+// ------------------------------------------------------------ Geräteschilder
+function pill(text, wm, x, y, z) {
+  const o = canvasPlane(wm, wm * 96 / 512, 512, 96, (g, w, h) => {
+    g.font = `600 46px ${SANS}`; const tw = Math.min(w - 8, g.measureText(text).width + 60);
+    rr(g, (w - tw) / 2, 8, tw, h - 16, (h - 16) / 2); g.fillStyle = 'rgba(21,33,46,.9)'; g.fill();
+    g.fillStyle = '#fff'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, w / 2, h / 2 + 2);
+  }, true);
+  o.mesh.position.set(x, y, z); world.add(o.mesh); return o;
+}
+function socket(parent, x, y, z, mat, back = false) {
+  const s = cyl(0.0085, 0.0085, 0.012, mat, 16); s.rotation.x = Math.PI / 2; put(parent, s, x, y, back ? z - 0.004 : z + 0.004);
+  const o = new THREE.Object3D(); o.position.set(x, y, back ? z - 0.01 : z + 0.01); parent.add(o); return o;
+}
+
 // ------------------------------------------------------------ Netzgerät
-const supply = new THREE.Group(); supply.position.set(-0.6, 0.9, -0.95); supply.rotation.y = 0.45; world.add(supply);
-put(supply, box(0.28, 0.15, 0.2, M.casing), 0, 0.075, 0);
+const supply = new THREE.Group(); supply.position.set(-0.52, 0.9, -1.0); world.add(supply);
+put(supply, box(0.28, 0.14, 0.2, M.casing), 0, 0.08, 0);
+put(supply, box(0.284, 0.012, 0.204, M.casingBase), 0, 0.006, 0);
+put(supply, box(0.26, 0.12, 0.004, M.front), 0, 0.08, 0.1);
 const supDisp = canvasPlane(0.13, 0.05, 320, 124, (g, w, h) => {
   g.fillStyle = '#1a0d0b'; g.fillRect(0, 0, w, h);
   g.fillStyle = '#ff5a3c'; g.font = `600 64px ${MONO}`; g.textAlign = 'right'; g.textBaseline = 'middle'; g.fillText(nf(st.U, 2), w - 86, h / 2 + 4);
   g.font = `600 40px ${SANS}`; g.textAlign = 'left'; g.fillText('kV', w - 80, h / 2 + 6);
 });
-put(supply, supDisp.mesh, -0.05, 0.095, 0.1006);
-const supLbl = canvasPlane(0.26, 0.026, 640, 64, (g, w, h) => { g.fillStyle = '#e9ecef'; g.font = `600 34px ${SANS}`; g.textBaseline = 'middle'; g.fillText('Hochspannungs-Netzgerät', 10, h / 2); }, true);
-put(supply, supLbl.mesh, 0, 0.135, 0.1006);
-{ const k = cyl(0.018, 0.018, 0.018, M.ebonite, 24); k.rotation.x = Math.PI / 2; put(supply, k, 0.08, 0.095, 0.108); }
-const supPlus = new THREE.Object3D(), supMinus = new THREE.Object3D();
-for (const [x, mat, o] of [[0.04, M.red, supPlus], [0.095, M.blue, supMinus]]) {
-  const s = cyl(0.008, 0.008, 0.014, mat, 14); s.rotation.x = Math.PI / 2; put(supply, s, x, 0.035, 0.105);
-  o.position.set(x, 0.035, 0.115); supply.add(o);
-}
+put(supply, supDisp.mesh, -0.045, 0.105, 0.1026);
+{ const k = cyl(0.017, 0.017, 0.016, M.casing, 24); k.rotation.x = Math.PI / 2; put(supply, k, 0.08, 0.105, 0.108); }
+const supPlus = socket(supply, 0.04, 0.042, 0.102, M.red);
+const supMinusB = socket(supply, 0.09, 0.042, -0.1, M.blue, true);
+const supTags = canvasPlane(0.1, 0.018, 400, 72, (g, w, h) => { g.fillStyle = '#c9d2dc'; g.font = `600 44px ${SANS}`; g.textBaseline = 'middle'; g.textAlign = 'center'; g.fillText('+  Ausgang', w / 2, h / 2); }, true);
+put(supply, supTags.mesh, 0.06, 0.066, 0.1026);
+pill('Netzgerät', 0.2, -0.52, 1.095, -1.0);
 
 // ------------------------------------------------------------ Umschalter
-const sw = new THREE.Group(); sw.position.set(-0.3, 0.9, -0.7); sw.rotation.y = 0.3; world.add(sw);
-put(sw, box(0.12, 0.03, 0.075, M.ebonite), 0, 0.015, 0);
+const sw = new THREE.Group(); sw.position.set(-0.3, 0.9, -0.68); world.add(sw);
+put(sw, box(0.12, 0.03, 0.075, M.front), 0, 0.015, 0);
 put(sw, cyl(0.007, 0.007, 0.006, M.brass, 12), -0.035, 0.033, -0.012);
 put(sw, cyl(0.007, 0.007, 0.006, M.brass, 12), 0.035, 0.033, -0.012);
 const lever = new THREE.Group(); lever.position.set(0, 0.03, -0.012); sw.add(lever);
@@ -291,13 +315,18 @@ const swLbl = canvasPlane(0.12, 0.024, 600, 120, (g, w, h) => {
   g.textAlign = 'left'; g.fillText('LADEN', 14, h / 2); g.textAlign = 'right'; g.fillText('MESSEN', w - 14, h / 2);
 }, true);
 swLbl.mesh.rotation.x = -Math.PI / 2; put(sw, swLbl.mesh, 0, 0.0305, 0.022);
-const swCommon = new THREE.Object3D(); swCommon.position.set(0, 0.015, -0.04); sw.add(swCommon);
-const swLaden = new THREE.Object3D(); swLaden.position.set(-0.062, 0.015, 0); sw.add(swLaden);
-const swMessen = new THREE.Object3D(); swMessen.position.set(0.062, 0.015, 0); sw.add(swMessen);
+const swSock = (x, z, ry) => { const s = cyl(0.006, 0.006, 0.01, M.brass, 12); s.rotation.set(Math.PI / 2, 0, ry); put(sw, s, x, 0.015, z); };
+swSock(-0.062, 0, Math.PI / 2); swSock(0.062, 0, Math.PI / 2); swSock(0, -0.04, 0);
+const swCommon = new THREE.Object3D(); swCommon.position.set(0, 0.015, -0.045); sw.add(swCommon);
+const swLaden = new THREE.Object3D(); swLaden.position.set(-0.067, 0.015, 0); sw.add(swLaden);
+const swMessen = new THREE.Object3D(); swMessen.position.set(0.067, 0.015, 0); sw.add(swMessen);
+pill('Umschalter', 0.17, -0.3, 1.04, -0.68);
 
 // ------------------------------------------------------------ Messverstärker
-const meter = new THREE.Group(); meter.position.set(0.6, 0.9, -0.95); meter.rotation.y = -0.45; world.add(meter);
-put(meter, box(0.26, 0.16, 0.2, M.casing2), 0, 0.08, 0);
+const meter = new THREE.Group(); meter.position.set(0.52, 0.9, -1.0); world.add(meter);
+put(meter, box(0.26, 0.15, 0.2, M.casing), 0, 0.087, 0);
+put(meter, box(0.264, 0.012, 0.204, M.casingBase), 0, 0.006, 0);
+put(meter, box(0.24, 0.13, 0.004, M.front), 0, 0.085, 0.1);
 const meterDisp = canvasPlane(0.2, 0.07, 480, 168, (g, w, h) => {
   g.fillStyle = '#0d1a12'; g.fillRect(0, 0, w, h);
   g.fillStyle = '#7dffa8'; g.textBaseline = 'middle';
@@ -305,32 +334,74 @@ const meterDisp = canvasPlane(0.2, 0.07, 480, 168, (g, w, h) => {
   g.font = `600 84px ${MONO}`; g.textAlign = 'right'; g.fillText(nf(Math.max(0, st.Qshow), 1), w - 100, h / 2 + 6);
   g.font = `600 40px ${SANS}`; g.textAlign = 'left'; g.fillText('nC', w - 88, h / 2 + 8);
 });
-put(meter, meterDisp.mesh, 0, 0.1, 0.1006);
-const meterLbl = canvasPlane(0.26, 0.026, 640, 64, (g, w, h) => { g.fillStyle = INK; g.font = `600 34px ${SANS}`; g.textBaseline = 'middle'; g.fillText('Messverstärker · Ladung Q', 10, h / 2); }, true);
-put(meter, meterLbl.mesh, 0, 0.148, 0.1006);
-const nullBtn = cyl(0.012, 0.012, 0.012, M.knob.clone(), 20); nullBtn.rotation.x = Math.PI / 2; put(meter, nullBtn, 0.08, 0.035, 0.106);
-const nullLbl = canvasPlane(0.05, 0.015, 200, 60, (g, w, h) => { g.fillStyle = INK; g.font = `700 40px ${SANS}`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('NULL', w / 2, h / 2); }, true);
-put(meter, nullLbl.mesh, 0.08, 0.057, 0.1006);
-const meterIn = new THREE.Object3D(), meterGnd = new THREE.Object3D();
-for (const [x, mat, o] of [[-0.09, M.red, meterIn], [-0.045, M.blue, meterGnd]]) {
-  const s = cyl(0.008, 0.008, 0.014, mat, 14); s.rotation.x = Math.PI / 2; put(meter, s, x, 0.035, 0.105);
-  o.position.set(x, 0.035, 0.115); meter.add(o);
-}
+put(meter, meterDisp.mesh, 0, 0.11, 0.1026);
+const nullBtn = cyl(0.012, 0.012, 0.012, M.knob.clone(), 20); nullBtn.rotation.x = Math.PI / 2; put(meter, nullBtn, 0.08, 0.04, 0.108);
+const nullLbl = canvasPlane(0.05, 0.015, 200, 60, (g, w, h) => { g.fillStyle = '#e9ecef'; g.font = `700 40px ${SANS}`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('NULL', w / 2, h / 2); }, true);
+put(meter, nullLbl.mesh, 0.08, 0.063, 0.1026);
+const meterGnd = socket(meter, -0.1, 0.042, 0.102, M.blue);
+const meterIn = socket(meter, -0.05, 0.042, 0.102, M.yellow);
+const meterGndB = socket(meter, -0.1, 0.042, -0.1, M.blue, true);
+const mTags = canvasPlane(0.1, 0.018, 400, 72, (g, w, h) => { g.fillStyle = '#c9d2dc'; g.font = `600 44px ${SANS}`; g.textBaseline = 'middle'; g.textAlign = 'center'; g.fillText('⏚     Eingang', w / 2, h / 2); }, true);
+put(meter, mTags.mesh, -0.075, 0.066, 0.1026);
+pill('Messverstärker', 0.24, 0.52, 1.105, -1.0);
 
-// ------------------------------------------------------------ Kabel
+// ------------------------------------------------------------ Kabel (rechtwinklig auf dem Tisch verlegt)
 const cableG = new THREE.Group(); world.add(cableG);
-const cableMats = { red: new THREE.MeshStandardMaterial({ color: 0xcf3a2e, roughness: 0.45 }), blue: new THREE.MeshStandardMaterial({ color: 0x2560c4, roughness: 0.45 }), yel: new THREE.MeshStandardMaterial({ color: 0xd99a1e, roughness: 0.45 }) };
+const cableMats = { red: new THREE.MeshStandardMaterial({ color: 0xd23b2f, roughness: 0.4 }), blue: new THREE.MeshStandardMaterial({ color: 0x2862c8, roughness: 0.4 }), yel: new THREE.MeshStandardMaterial({ color: 0xe0a21e, roughness: 0.4 }) };
+const BY = 0.9036;
 function wp(o) { return world.worldToLocal(o.getWorldPosition(new THREE.Vector3())); }
+function roundedPath(raw, r = 0.022) {
+  const pts = raw.filter((p, i) => i === 0 || p.distanceTo(raw[i - 1]) > 1e-4);
+  const path = new THREE.CurvePath();
+  let prev = pts[0].clone();
+  for (let i = 1; i < pts.length - 1; i++) {
+    const a = pts[i - 1], b = pts[i], c = pts[i + 1];
+    const d1 = b.clone().sub(a), d2 = c.clone().sub(b), l1 = d1.length(), l2 = d2.length();
+    d1.divideScalar(l1); d2.divideScalar(l2);
+    const k = Math.min(r, l1 / 2, l2 / 2);
+    const p1 = b.clone().addScaledVector(d1, -k), p2 = b.clone().addScaledVector(d2, k);
+    if (prev.distanceTo(p1) > 1e-5) path.add(new THREE.LineCurve3(prev, p1));
+    path.add(new THREE.QuadraticBezierCurve3(p1, b.clone(), p2));
+    prev = p2;
+  }
+  const last = pts[pts.length - 1];
+  if (prev.distanceTo(last) > 1e-5) path.add(new THREE.LineCurve3(prev, last.clone()));
+  return path;
+}
+const endOf = (o, dirLocal) => ({ p: wp(o), d: dirLocal.clone().transformDirection(o.parent.matrixWorld) });
+function lead(e, side) { // Stecker, kurzes Stück heraus, ggf. seitlich, dann senkrecht auf den Tisch
+  const a = e.p.clone().addScaledVector(e.d, 0.022), b = e.p.clone().addScaledVector(e.d, 0.045);
+  const pts = [a, b];
+  if (side) pts.push(b.clone().addScaledVector(side, 0.045));
+  pts.push(pts[pts.length - 1].clone().setY(BY));
+  return pts;
+}
+function plug(e, mat) {
+  const m = cyl(0.0058, 0.0058, 0.024, mat, 14);
+  m.position.copy(e.p).addScaledVector(e.d, 0.011); m.quaternion.setFromUnitVectors(v(0, 1, 0), e.d); cableG.add(m);
+}
+function wire(eA, sideA, mids, eB, sideB, color) {
+  const A = lead(eA, sideA), B = lead(eB, sideB).reverse();
+  const path = roundedPath([...A, ...mids(A[A.length - 1], B[0]).map(([x, z]) => v(x, BY, z)), ...B]);
+  cableG.add(mesh(new THREE.TubeGeometry(path, Math.max(48, Math.round(path.getLength() * 220)), 0.0034, 8, false), cableMats[color]));
+  plug(eA, cableMats[color]); plug(eB, cableMats[color]);
+}
 function rebuildCables() {
   scene.updateMatrixWorld(true);
   cableG.children.forEach(c => c.geometry.dispose()); cableG.clear();
-  const benchY = 0.906;
-  for (const [a, b, mat] of [[plateL.term, swCommon, 'red'], [swLaden, supPlus, 'red'], [swMessen, meterIn, 'yel'], [plateR.term, meterGnd, 'blue'], [meterGnd, supMinus, 'blue']]) {
-    const p = wp(a), q = wp(b);
-    const pts = [p, p.clone().add(v(0, 0.02, 0)), p.clone().lerp(q, 0.3).setY(benchY), p.clone().lerp(q, 0.7).setY(benchY), q.clone().add(v(0, 0.012, 0)), q];
-    const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
-    cableG.add(mesh(new THREE.TubeGeometry(curve, 60, 0.0032, 6), cableMats[mat]));
-  }
+  const UP = v(0, 1, 0), FRONT = v(0, 0, 1), BACK = v(0, 0, -1);
+  const toFront = v(0, 0, 1).transformDirection(capG.matrixWorld); // neben der Schiene herunter
+  const pL = endOf(plateL.term, UP), pR = endOf(plateR.term, UP);
+  // Pluspol: Netzgerät → Umschalter (Laden)
+  wire(endOf(supPlus, FRONT), null, (a, b) => [[a.x, b.z]], endOf(swLaden, v(-1, 0, 0)), null, 'red');
+  // linke Platte → Umschalter (Mitte)
+  wire(pL, toFront, (a, b) => [[a.x, -0.8], [b.x, -0.8]], endOf(swCommon, BACK), null, 'red');
+  // Umschalter (Messen) → Messverstärker Eingang
+  wire(endOf(swMessen, v(1, 0, 0)), null, (a, b) => [[-0.17, a.z], [-0.17, -0.6], [b.x, -0.6]], endOf(meterIn, FRONT), null, 'yel');
+  // rechte Platte → Masse am Messverstärker
+  wire(pR, toFront, (a, b) => [[a.x, -0.64], [b.x, -0.64]], endOf(meterGnd, FRONT), null, 'blue');
+  // Masse Messverstärker ↔ Minuspol Netzgerät (hinten am Tisch)
+  wire(endOf(supMinusB, BACK), null, (a, b) => [[a.x, -1.17], [b.x, -1.17]], endOf(meterGndB, BACK), null, 'blue');
 }
 
 function applyGeometry(rChanged) {
@@ -352,7 +423,7 @@ class Panel {
     this.cv = document.createElement('canvas'); this.cv.width = pw; this.cv.height = ph; this.g = this.cv.getContext('2d');
     this.tex = new THREE.CanvasTexture(this.cv); this.tex.colorSpace = THREE.SRGBColorSpace; this.tex.anisotropy = maxAniso;
     this.group = new THREE.Group();
-    this.mesh = mesh(new THREE.PlaneGeometry(wm, hm), new THREE.MeshBasicMaterial({ map: this.tex, toneMapped: false, transparent: !pickable }));
+    this.mesh = flat(mesh(new THREE.PlaneGeometry(wm, hm), new THREE.MeshBasicMaterial({ map: this.tex, toneMapped: false, transparent: !pickable })));
     this.group.add(this.mesh);
     if (pickable) {
       const back = box(wm + 0.02, hm + 0.02, 0.012, M.benchEdge); back.position.z = -0.008; this.group.add(back);
@@ -423,7 +494,7 @@ const ctrl = new Panel('ctrl', 0.64, 0.86, 900, 1210, (g, P) => {
   g.font = `400 27px ${SANS}`; g.fillStyle = MUTED;
   wrap(g, 'Der Messverstärker zeigt die Ladung Q. Gespeichert wird C = Q/U. Leichte Messunsicherheit (≈ 1 %) ist eingebaut.', 36, y, W - 72, 36, 3);
 });
-ctrl.group.position.set(-0.8, 1.42, -0.6); ctrl.group.rotation.y = 0.92; world.add(ctrl.group);
+ctrl.group.position.set(-0.98, 1.52, -0.48); ctrl.group.rotation.y = 1.02; world.add(ctrl.group);
 
 // --- Messreihe (rechts)
 function niceMax(x) { if (!(x > 0)) return 1; const e = 10 ** Math.floor(Math.log10(x)); for (const m of [1, 2, 2.5, 5, 10]) if (x <= m * e * 1.0000001) return m * e; return 10 * e; }
@@ -548,7 +619,7 @@ const graph = new Panel('graph', 0.72, 0.86, 1000, 1194, (g, P) => {
   P.button('undo', 30, 1100, (W - 72) / 2, 72, 'Letzten löschen', { disabled: !s.length, font: `600 32px ${SANS}`, action: deleteLast });
   P.button('clr', 42 + (W - 72) / 2, 1100, (W - 72) / 2, 72, 'Reihe löschen', { disabled: !s.length, font: `600 32px ${SANS}`, action: clearSeries });
 });
-graph.group.position.set(0.82, 1.42, -0.6); graph.group.rotation.y = -0.92; world.add(graph.group);
+graph.group.position.set(1.0, 1.52, -0.48); graph.group.rotation.y = -1.02; world.add(graph.group);
 
 // --- Hinweisband (Mitte)
 const banner = new Panel('banner', 0.78, 0.1, 1560, 200, (g, P) => {
@@ -683,7 +754,7 @@ const progMat = new THREE.MeshBasicMaterial({ color: 0xf0b040, depthTest: false,
 const retDot = mesh(new THREE.CircleGeometry(0.0075, 24), retMat); retDot.renderOrder = 1001;
 const retRing = mesh(new THREE.RingGeometry(0.0075, 0.0105, 24), retEdge); retRing.renderOrder = 1000;
 let progMesh = mesh(new THREE.RingGeometry(0.016, 0.023, 32), progMat); progMesh.renderOrder = 1002; progMesh.visible = false;
-reticle.add(retDot, retRing, progMesh);
+reticle.add(flat(retDot), flat(retRing), flat(progMesh));
 let progStep = -1;
 function setProgress(k) {
   const step = Math.round(clamp(k, 0, 1) * 32);
