@@ -76,7 +76,7 @@ const fixVal = (k, p) => k === 'd' ? nf(p.d) + ' cm' : k === 'r' ? nf(p.r) + ' c
 // ------------------------------------------------------------ Zustand
 const st = {
   U: 1.0, d: 2.0, r: 10, med: 'air', sw: 'messen', real: false,
-  Qvis: 0, t0: 0, Qm: 0, Qshow: 0, meter: null,
+  Qvis: 0, t0: 0, eShow: true, Qm: 0, Qshow: 0, meter: null,
   mode: 'Cd', xInv: false,
   msg: 'Willkommen! Links stellst du ein, rechts wählst du die Messreihe. Ablauf: Laden → Messen → Messwert speichern.', msgKind: '',
 };
@@ -154,8 +154,21 @@ const M = {
   knob: new THREE.MeshStandardMaterial({ color: 0xcf3a2e, roughness: 0.35 }),
   pick: new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, colorWrite: false }),
 };
-const plusMat = new THREE.SpriteMaterial({ map: signTexture(1) });
-const minusMat = new THREE.SpriteMaterial({ map: signTexture(-1) });
+// Ladungen auf den Platten: durch die Platten hindurch sichtbar
+const plusMat = new THREE.SpriteMaterial({ map: signTexture(1), depthTest: false, transparent: true });
+const minusMat = new THREE.SpriteMaterial({ map: signTexture(-1), depthTest: false, transparent: true });
+function electronTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 96;
+  const g = c.getContext('2d');
+  const gr = g.createRadialGradient(48, 48, 10, 48, 48, 48);
+  gr.addColorStop(0, 'rgba(120,180,255,.9)'); gr.addColorStop(0.45, 'rgba(70,140,255,.45)'); gr.addColorStop(1, 'rgba(60,120,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 96, 96);
+  g.fillStyle = '#2f6fe0'; g.beginPath(); g.arc(48, 48, 22, 0, Math.PI * 2); g.fill();
+  g.lineWidth = 3; g.strokeStyle = '#fff'; g.stroke();
+  g.fillStyle = '#fff'; g.fillRect(36, 45, 24, 6);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const eMat = new THREE.SpriteMaterial({ map: electronTexture(), transparent: true, depthWrite: false });
 const slabMats = {
   plexi: new THREE.MeshPhysicalMaterial({ color: 0xdff3f6, roughness: 0.05, transparent: true, opacity: 0.45, clearcoat: 1, depthWrite: false }),
   glass: new THREE.MeshPhysicalMaterial({ color: 0x8fd3be, roughness: 0.03, transparent: true, opacity: 0.5, clearcoat: 1, depthWrite: false }),
@@ -226,7 +239,7 @@ class Plate {
     this.mat = M.alu.clone();
     this.charges = new THREE.Group(); this.group.add(this.charges);
     this.sprites = [];
-    for (let i = 0; i < 48; i++) { const s = new THREE.Sprite(side < 0 ? plusMat : minusMat); s.visible = false; s.raycast = () => {}; this.charges.add(s); this.sprites.push(s); }
+    for (let i = 0; i < 48; i++) { const s = new THREE.Sprite(side < 0 ? plusMat : minusMat); s.visible = false; s.raycast = () => {}; s.renderOrder = 6; this.charges.add(s); this.sprites.push(s); }
   }
   setR(rcm) {
     const r = rcm / 100;
@@ -234,7 +247,7 @@ class Plate {
     this.disk = cyl(r, r, 0.003, this.mat, 64); this.disk.rotation.z = Math.PI / 2; this.disk.position.set(0, 0.25, 0);
     this.rim = mesh(new THREE.TorusGeometry(r, 0.002, 8, 64), this.mat); this.rim.rotation.y = Math.PI / 2; this.rim.position.set(0, 0.25, 0);
     this.group.add(this.disk, this.rim);
-    const N = this.sprites.length, sc = clamp(r * 0.11, 0.008, 0.014);
+    const N = this.sprites.length, sc = clamp(r * 0.13, 0.011, 0.018);
     this.sprites.forEach((s, i) => {
       const rr2 = r * 0.85 * Math.sqrt((i + 0.5) / N), th = i * 2.39996;
       s.position.set(-this.side * 0.006, 0.25 + rr2 * Math.sin(th), rr2 * Math.cos(th)); s.scale.set(sc, sc, 1);
@@ -380,11 +393,13 @@ function plug(e, mat) {
   const m = cyl(0.0058, 0.0058, 0.024, mat, 14);
   m.position.copy(e.p).addScaledVector(e.d, 0.011); m.quaternion.setFromUnitVectors(v(0, 1, 0), e.d); cableG.add(m);
 }
-function wire(eA, sideA, mids, eB, sideB, color) {
+const wires = {};
+function wire(key, eA, sideA, mids, eB, sideB, color) {
   const A = lead(eA, sideA), B = lead(eB, sideB).reverse();
   const path = roundedPath([...A, ...mids(A[A.length - 1], B[0]).map(([x, z]) => v(x, BY, z)), ...B]);
   cableG.add(mesh(new THREE.TubeGeometry(path, Math.max(48, Math.round(path.getLength() * 220)), 0.0034, 8, false), cableMats[color]));
   plug(eA, cableMats[color]); plug(eB, cableMats[color]);
+  wires[key] = { path, len: path.getLength() };
 }
 function rebuildCables() {
   scene.updateMatrixWorld(true);
@@ -393,15 +408,15 @@ function rebuildCables() {
   const toFront = v(0, 0, 1).transformDirection(capG.matrixWorld); // neben der Schiene herunter
   const pL = endOf(plateL.term, UP), pR = endOf(plateR.term, UP);
   // Pluspol: Netzgerät → Umschalter (Laden)
-  wire(endOf(supPlus, FRONT), null, (a, b) => [[a.x, b.z]], endOf(swLaden, v(-1, 0, 0)), null, 'red');
+  wire('lad', endOf(supPlus, FRONT), null, (a, b) => [[a.x, b.z]], endOf(swLaden, v(-1, 0, 0)), null, 'red');
   // linke Platte → Umschalter (Mitte)
-  wire(pL, toFront, (a, b) => [[a.x, -0.8], [b.x, -0.8]], endOf(swCommon, BACK), null, 'red');
+  wire('L', pL, toFront, (a, b) => [[a.x, -0.8], [b.x, -0.8]], endOf(swCommon, BACK), null, 'red');
   // Umschalter (Messen) → Messverstärker Eingang
-  wire(endOf(swMessen, v(1, 0, 0)), null, (a, b) => [[-0.17, a.z], [-0.17, -0.6], [b.x, -0.6]], endOf(meterIn, FRONT), null, 'yel');
+  wire('mes', endOf(swMessen, v(1, 0, 0)), null, (a, b) => [[-0.17, a.z], [-0.17, -0.6], [b.x, -0.6]], endOf(meterIn, FRONT), null, 'yel');
   // rechte Platte → Masse am Messverstärker
-  wire(pR, toFront, (a, b) => [[a.x, -0.64], [b.x, -0.64]], endOf(meterGnd, FRONT), null, 'blue');
+  wire('R', pR, toFront, (a, b) => [[a.x, -0.64], [b.x, -0.64]], endOf(meterGnd, FRONT), null, 'blue');
   // Masse Messverstärker ↔ Minuspol Netzgerät (hinten am Tisch)
-  wire(endOf(supMinusB, BACK), null, (a, b) => [[a.x, -1.17], [b.x, -1.17]], endOf(meterGndB, BACK), null, 'blue');
+  wire('back', endOf(supMinusB, BACK), null, (a, b) => [[a.x, -1.17], [b.x, -1.17]], endOf(meterGndB, BACK), null, 'blue');
 }
 
 function applyGeometry(rChanged) {
@@ -489,10 +504,12 @@ const ctrl = new Panel('ctrl', 0.64, 0.86, 900, 1210, (g, P) => {
   P.button('save', 36, y, W - 72 - 12 - 250, 100, 'Messwert speichern', { accent: true, font: `700 40px ${SANS}`, action: saveMeasurement });
   P.button('null', W - 36 - 250, y, 250, 100, 'Nullen', { action: nullMeter });
   y += 124;
-  P.button('real', 36, y, W - 72, 80, 'Streukapazität & Randfeld: ' + (st.real ? 'an (realistisch)' : 'aus (ideal)'), { on: st.real, onColor: '#2f4258', font: `600 30px ${SANS}`, action: toggleReal });
+  const hw = (W - 72 - 12) / 2;
+  P.button('real', 36, y, hw, 80, 'Randfeld: ' + (st.real ? 'an' : 'aus'), { on: st.real, onColor: '#2f4258', font: `600 32px ${SANS}`, action: toggleReal });
+  P.button('el', 36 + hw + 12, y, hw, 80, 'Elektronen: ' + (st.eShow ? 'an' : 'aus'), { on: st.eShow, onColor: '#2560c4', font: `600 32px ${SANS}`, action: toggleElectrons });
   y += 112;
   g.font = `400 27px ${SANS}`; g.fillStyle = MUTED;
-  wrap(g, 'Der Messverstärker zeigt die Ladung Q. Gespeichert wird C = Q/U. Leichte Messunsicherheit (≈ 1 %) ist eingebaut.', 36, y, W - 72, 36, 3);
+  wrap(g, 'Elektronen (blau) fließen in Zeitlupe; echt dauert das Umladen Mikrosekunden. „+“ heißt: dort fehlen Elektronen. Gespeichert wird C = Q/U.', 36, y, W - 72, 36, 3);
 });
 ctrl.group.position.set(-0.98, 1.52, -0.48); ctrl.group.rotation.y = 1.02; world.add(ctrl.group);
 
@@ -670,16 +687,17 @@ function setSwitch(pos) {
   if (st.sw === pos) { say(pos === 'laden' ? 'Der Schalter steht schon auf „Laden“.' : 'Der Schalter steht schon auf „Messen“.'); return; }
   const q = chargeNow();
   st.sw = pos;
-  if (pos === 'laden') { st.t0 = performance.now(); say(`Der Kondensator wird mit U = ${nf(st.U, 2)} kV geladen. Dann auf „Messen“ umschalten.`); return; }
+  if (pos === 'laden') { st.t0 = performance.now(); say(st.eShow ? `Laden (Zeitlupe): Das Netzgerät pumpt Elektronen von der linken auf die rechte Platte. Dann auf „Messen“.` : `Der Kondensator wird mit U = ${nf(st.U, 2)} kV geladen. Dann auf „Messen“ umschalten.`); return; }
   if (q < 0.01) { say('Der Kondensator war nicht geladen. Erst auf „Laden“ schalten.', 'warn'); return; }
   const meas = Math.max(0, q * (1 + gauss() * 0.008) + gauss() * 0.04);
   const snap = { U: st.U, d: st.d, r: st.r, med: st.med };
   if (st.meter && st.Qm > 0.05) { st.meter.count++; st.meter.mixed = st.meter.mixed || ['U', 'd', 'r', 'med'].some(k => st.meter[k] !== snap[k]); }
   else st.meter = { ...snap, count: 1, mixed: false };
-  st.Qm += meas; st.Qvis = 0;
+  st.Qm += meas;
   if (st.meter.count > 1) say('Der Messverstärker hat die Ladung dazugezählt. Vor jeder Messung „Nullen“!', 'warn');
-  else say(`Die Ladung ist in den Messverstärker geflossen: Q ≈ ${nf(st.Qm, 1)} nC. Jetzt „Messwert speichern“.`);
+  else say(st.eShow ? `Die Elektronen fließen über den Messverstärker zurück, er zählt Q ≈ ${nf(st.Qm, 1)} nC. Jetzt „Messwert speichern“.` : `Die Ladung ist in den Messverstärker geflossen: Q ≈ ${nf(st.Qm, 1)} nC. Jetzt „Messwert speichern“.`);
 }
+function toggleElectrons() { st.eShow = !st.eShow; say(st.eShow ? 'Elektronen werden angezeigt: blaue Punkte, in Zeitlupe.' : 'Elektronenfluss ausgeblendet.'); }
 function nullMeter() { st.Qm = 0; st.meter = null; say('Messverstärker auf null gestellt.'); }
 function toggleReal() {
   st.real = !st.real;
@@ -921,11 +939,45 @@ for (let i = 0; i < 2; i++) {
 }
 
 // ------------------------------------------------------------ Darstellung pro Frame
+// ------------------------------------------------------------ Elektronenfluss (Zeitlupe)
+const TAU_VIS = 0.6, E_SPEED = 0.32;
+const CHARGE = [['L', false], ['lad', true], ['back', false], ['R', true]];   // Laden: links → Netzgerät → rechts
+const DISCHARGE = [['R', false], ['mes', true], ['L', true]];                 // Messen: rechts → Messverstärker → links
+const eParts = [], ePool = [], eAcc = {};
+function eSprite() {
+  const s = ePool.pop() || (() => { const n = new THREE.Sprite(eMat); n.raycast = () => {}; n.scale.set(0.022, 0.022, 1); n.renderOrder = 5; world.add(n); return n; })();
+  s.visible = true; return s;
+}
+function updateElectrons(dt, I) {
+  const on = st.eShow && Math.abs(I) > 0.08;
+  if (on) {
+    let segs = st.sw === 'laden' ? CHARGE : DISCHARGE;
+    if (st.sw === 'laden' && I < 0) segs = CHARGE.map(([k, r]) => [k, !r]);
+    if (st.sw === 'messen' && I > 0) segs = DISCHARGE.map(([k, r]) => [k, !r]);
+    const rate = clamp(7 * Math.sqrt(Math.abs(I)), 4, 46);
+    for (const [key, rev] of segs) {
+      const w = wires[key]; if (!w) continue;
+      const id = key + rev; eAcc[id] = (eAcc[id] || Math.random()) + rate * dt;
+      while (eAcc[id] >= 1 && eParts.length < 360) { eAcc[id] -= 1; eParts.push({ s: eSprite(), w, rev, u: Math.random() * 0.02 }); }
+    }
+  }
+  for (let i = eParts.length - 1; i >= 0; i--) {
+    const e = eParts[i];
+    e.u += E_SPEED * dt / e.w.len;
+    if (e.u >= 1 || !st.eShow) { e.s.visible = false; ePool.push(e.s); eParts.splice(i, 1); continue; }
+    e.s.position.copy(e.w.path.getPoint(e.rev ? 1 - e.u : e.u));
+    e.s.position.y += 0.006;
+  }
+}
+
 let meterDrawn = -1;
 function updateVisuals(dt) {
-  if (st.sw === 'laden') st.Qvis = chargeNow();
-  st.Qshow += (st.Qm - st.Qshow) * Math.min(1, dt * 7);
+  const k = 1 - Math.exp(-dt / TAU_VIS), q0 = st.Qvis;
+  st.Qvis += ((st.sw === 'laden' ? capPF() * st.U : 0) - st.Qvis) * k;
+  if (Math.abs(st.Qvis) < 0.005) st.Qvis = 0;
+  st.Qshow += (st.Qm - st.Qshow) * k;
   if (Math.abs(st.Qshow - st.Qm) < 0.02) st.Qshow = st.Qm;
+  updateElectrons(dt, dt > 0 ? (st.Qvis - q0) / dt : 0);
   if (Math.abs(st.Qshow - meterDrawn) > 0.04 || (st.Qshow === 0 && meterDrawn !== 0)) { meterDrawn = st.Qshow; meterDisp.redraw(); }
   const sigma = st.Qvis / (Math.PI * st.r * st.r); // nC/cm²
   const frac = clamp(sigma / 0.15, 0, 1), n = Math.round(48 * frac);
