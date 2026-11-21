@@ -34,6 +34,7 @@ body.stereo.portrait #rotate{display:grid}
     <button class="b primary" id="btnXR" type="button" hidden>VR-Brille starten</button>
     <button class="b primary" id="btnCardboard" type="button">Cardboard</button>
     <button class="b" id="btnGyro" type="button" aria-pressed="false">Bewegungssensor</button>
+    <button class="b" id="btnTut" type="button">Tutorial</button>
     <button class="b" id="btnCenter" type="button">Nach vorn</button>
   </div>
 </div>
@@ -57,7 +58,7 @@ const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const gauss = () => { let u = 0, w = 0; while (!u) u = Math.random(); while (!w) w = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * w); };
 const SANS = 'system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif';
 const MONO = 'ui-monospace,"SF Mono",Menlo,Consolas,"Roboto Mono",monospace';
-const INK = '#15212e', MUTED = '#5a6775', LINE = '#d4dae1', BRASS = '#b06f16', BRASS_SOFT = '#f7ead6', OKC = '#2c8549', WARN = '#c2491b', PAPER = '#f3f5f7';
+const INK = '#15212e', MUTED = '#465361', LINE = '#d4dae1', BRASS = '#b06f16', BRASS_SOFT = '#f7ead6', OKC = '#2c8549', WARN = '#c2491b', PAPER = '#f3f5f7';
 
 const MEDIA = {
   air: { name: 'Luft', er: 1.0 },
@@ -76,7 +77,7 @@ const fixVal = (k, p) => k === 'd' ? nf(p.d) + ' cm' : k === 'r' ? nf(p.r) + ' c
 // ------------------------------------------------------------ Zustand
 const st = {
   U: 1.0, d: 2.0, r: 10, med: 'air', sw: 'messen', real: false,
-  Qvis: 0, eShow: true, mScale: 1, fullSaid: false, Qm: 0, Qshow: 0, meter: null,
+  Qvis: 0, eShow: true, msgT: 0, mScale: 1, fullSaid: false, Qm: 0, Qshow: 0, meter: null,
   mode: 'Cd', xInv: false,
   msg: 'Willkommen! Links stellst du ein, rechts wählst du die Messreihe. Ablauf: Laden → Messen → Messwert speichern.', msgKind: '',
 };
@@ -92,13 +93,14 @@ function capPF(p = st) {
 
 // ------------------------------------------------------------ Renderer & Szene
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.xr.enabled = true;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.xr.setReferenceSpaceType('local');
+renderer.xr.setFramebufferScaleFactor(1.25);
 document.body.prepend(renderer.domElement);
 const stereo = new StereoEffect(renderer);
 stereo.setEyeSeparation(0.064);
@@ -171,6 +173,7 @@ function electronTexture() {
 const eMat = new THREE.SpriteMaterial({ map: electronTexture(), transparent: true, depthWrite: false });
 const eMatX = new THREE.SpriteMaterial({ map: eMat.map, transparent: true, depthWrite: false, depthTest: false });
 const N_SITES = 64;
+const SS = 1.4; // Bedienfelder feiner zeichnen (schärfer)
 const slabMats = {
   plexi: new THREE.MeshPhysicalMaterial({ color: 0xdff3f6, roughness: 0.05, transparent: true, opacity: 0.45, clearcoat: 1, depthWrite: false }),
   glass: new THREE.MeshPhysicalMaterial({ color: 0x8fd3be, roughness: 0.03, transparent: true, opacity: 0.5, clearcoat: 1, depthWrite: false }),
@@ -281,20 +284,24 @@ function rebuildField() {
     capG.add(slab);
   }
 }
-const dLabel = canvasPlane(0.13, 0.04, 320, 98, (g, w, h) => {
+const dLabel = canvasPlane(0.17, 0.052, 480, 147, (g, w, h) => {
   rr(g, 3, 3, w - 6, h - 6, 18); g.fillStyle = 'rgba(255,255,255,.95)'; g.fill(); g.strokeStyle = LINE; g.lineWidth = 3; g.stroke();
-  g.fillStyle = INK; g.font = `600 52px ${MONO}`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('d = ' + nf(st.d) + ' cm', w / 2, h / 2 + 2);
+  g.fillStyle = INK; g.font = `700 78px ${MONO}`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('d = ' + nf(st.d) + ' cm', w / 2, h / 2 + 3);
 }, true);
 const dSprite = dLabel.mesh; world.add(dSprite);
+const camW = new THREE.Vector3();
+const camQ = new THREE.Quaternion();
+function faceViewer() { camera.getWorldQuaternion(camQ); for (const m of [dSprite, ...billboards]) m.quaternion.copy(camQ); }
 
-// ------------------------------------------------------------ Geräteschilder
+// ------------------------------------------------------------ Geräteschilder (drehen sich zum Betrachter)
+const billboards = [];
 function pill(text, wm, x, y, z) {
-  const o = canvasPlane(wm, wm * 96 / 512, 512, 96, (g, w, h) => {
-    g.font = `600 46px ${SANS}`; const tw = Math.min(w - 8, g.measureText(text).width + 60);
+  const o = canvasPlane(wm, wm * 144 / 768, 768, 144, (g, w, h) => {
+    g.font = `700 72px ${SANS}`; const tw = Math.min(w - 8, g.measureText(text).width + 80);
     rr(g, (w - tw) / 2, 8, tw, h - 16, (h - 16) / 2); g.fillStyle = 'rgba(21,33,46,.9)'; g.fill();
-    g.fillStyle = '#fff'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, w / 2, h / 2 + 2);
+    g.fillStyle = '#fff'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, w / 2, h / 2 + 3);
   }, true);
-  o.mesh.position.set(x, y, z); world.add(o.mesh); return o;
+  o.mesh.position.set(x, y, z); world.add(o.mesh); billboards.push(o.mesh); return o;
 }
 function socket(parent, x, y, z, mat, back = false) {
   const s = cyl(0.0085, 0.0085, 0.012, mat, 16); s.rotation.x = Math.PI / 2; put(parent, s, x, y, back ? z - 0.004 : z + 0.004);
@@ -315,9 +322,7 @@ put(supply, supDisp.mesh, -0.045, 0.105, 0.1026);
 { const k = cyl(0.017, 0.017, 0.016, M.casing, 24); k.rotation.x = Math.PI / 2; put(supply, k, 0.08, 0.105, 0.108); }
 const supPlus = socket(supply, 0.04, 0.042, 0.102, M.red);
 const supMinusB = socket(supply, 0.09, 0.042, -0.1, M.blue, true);
-const supTags = canvasPlane(0.1, 0.018, 400, 72, (g, w, h) => { g.fillStyle = '#c9d2dc'; g.font = `600 44px ${SANS}`; g.textBaseline = 'middle'; g.textAlign = 'center'; g.fillText('+  Ausgang', w / 2, h / 2); }, true);
-put(supply, supTags.mesh, 0.06, 0.066, 0.1026);
-pill('Netzgerät', 0.2, -0.52, 1.095, -1.0);
+pill('Netzgerät', 0.24, -0.52, 1.1, -1.0);
 
 // ------------------------------------------------------------ Umschalter
 const sw = new THREE.Group(); sw.position.set(-0.3, 0.9, -0.68); world.add(sw);
@@ -327,8 +332,8 @@ put(sw, cyl(0.007, 0.007, 0.006, M.brass, 12), 0.035, 0.033, -0.012);
 const lever = new THREE.Group(); lever.position.set(0, 0.03, -0.012); sw.add(lever);
 put(lever, cyl(0.004, 0.004, 0.07, M.steel, 12), 0, 0.035, 0);
 const leverKnob = put(lever, sph(0.011, M.knob.clone()), 0, 0.072, 0);
-const swLbl = canvasPlane(0.12, 0.024, 600, 120, (g, w, h) => {
-  g.fillStyle = '#fff'; g.font = `700 54px ${SANS}`; g.textBaseline = 'middle';
+const swLbl = canvasPlane(0.12, 0.026, 600, 130, (g, w, h) => {
+  g.fillStyle = '#fff'; g.font = `800 64px ${SANS}`; g.textBaseline = 'middle';
   g.textAlign = 'left'; g.fillText('LADEN', 14, h / 2); g.textAlign = 'right'; g.fillText('MESSEN', w - 14, h / 2);
 }, true);
 swLbl.mesh.rotation.x = -Math.PI / 2; put(sw, swLbl.mesh, 0, 0.0305, 0.022);
@@ -337,7 +342,7 @@ swSock(-0.062, 0, Math.PI / 2); swSock(0.062, 0, Math.PI / 2); swSock(0, -0.04, 
 const swCommon = new THREE.Object3D(); swCommon.position.set(0, 0.015, -0.045); sw.add(swCommon);
 const swLaden = new THREE.Object3D(); swLaden.position.set(-0.067, 0.015, 0); sw.add(swLaden);
 const swMessen = new THREE.Object3D(); swMessen.position.set(0.067, 0.015, 0); sw.add(swMessen);
-pill('Umschalter', 0.17, -0.3, 1.04, -0.68);
+pill('Umschalter', 0.21, -0.3, 1.045, -0.68);
 
 // ------------------------------------------------------------ Messverstärker
 const meter = new THREE.Group(); meter.position.set(0.52, 0.9, -1.0); world.add(meter);
@@ -353,14 +358,12 @@ const meterDisp = canvasPlane(0.2, 0.07, 480, 168, (g, w, h) => {
 });
 put(meter, meterDisp.mesh, 0, 0.11, 0.1026);
 const nullBtn = cyl(0.012, 0.012, 0.012, M.knob.clone(), 20); nullBtn.rotation.x = Math.PI / 2; put(meter, nullBtn, 0.08, 0.04, 0.108);
-const nullLbl = canvasPlane(0.05, 0.015, 200, 60, (g, w, h) => { g.fillStyle = '#e9ecef'; g.font = `700 40px ${SANS}`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('NULL', w / 2, h / 2); }, true);
+const nullLbl = canvasPlane(0.06, 0.02, 240, 80, (g, w, h) => { g.fillStyle = '#ffffff'; g.font = `800 56px ${SANS}`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('NULL', w / 2, h / 2); }, true);
 put(meter, nullLbl.mesh, 0.08, 0.063, 0.1026);
 const meterGnd = socket(meter, -0.1, 0.042, 0.102, M.blue);
 const meterIn = socket(meter, -0.05, 0.042, 0.102, M.yellow);
 const meterGndB = socket(meter, -0.1, 0.042, -0.1, M.blue, true);
-const mTags = canvasPlane(0.1, 0.018, 400, 72, (g, w, h) => { g.fillStyle = '#c9d2dc'; g.font = `600 44px ${SANS}`; g.textBaseline = 'middle'; g.textAlign = 'center'; g.fillText('⏚     Eingang', w / 2, h / 2); }, true);
-put(meter, mTags.mesh, -0.075, 0.066, 0.1026);
-pill('Messverstärker', 0.24, 0.52, 1.105, -1.0);
+pill('Messverstärker', 0.29, 0.52, 1.11, -1.0);
 
 // ------------------------------------------------------------ Kabel (rechtwinklig auf dem Tisch verlegt)
 const cableG = new THREE.Group(); world.add(cableG);
@@ -440,7 +443,7 @@ const panels = [], pickables = [];
 class Panel {
   constructor(name, wm, hm, pw, ph, draw, pickable = true) {
     Object.assign(this, { name, pw, ph, draw });
-    this.cv = document.createElement('canvas'); this.cv.width = pw; this.cv.height = ph; this.g = this.cv.getContext('2d');
+    this.cv = document.createElement('canvas'); this.cv.width = Math.round(pw * SS); this.cv.height = Math.round(ph * SS); this.g = this.cv.getContext('2d');
     this.tex = new THREE.CanvasTexture(this.cv); this.tex.colorSpace = THREE.SRGBColorSpace; this.tex.anisotropy = maxAniso;
     this.group = new THREE.Group();
     this.mesh = flat(mesh(new THREE.PlaneGeometry(wm, hm), new THREE.MeshBasicMaterial({ map: this.tex, toneMapped: false, transparent: !pickable })));
@@ -451,17 +454,21 @@ class Panel {
     }
     this.buttons = []; this.hover = null; this.dirty = true; panels.push(this);
   }
-  render() { this.buttons.length = 0; const g = this.g; g.save(); g.clearRect(0, 0, this.pw, this.ph); this.draw(g, this); g.restore(); this.tex.needsUpdate = true; this.dirty = false; }
+  render() { this.buttons.length = 0; const g = this.g; g.save(); g.setTransform(SS, 0, 0, SS, 0, 0); g.clearRect(0, 0, this.pw, this.ph); this.draw(g, this); g.restore(); this.tex.needsUpdate = true; this.dirty = false; }
   hit(uv) { const x = uv.x * this.pw, y = (1 - uv.y) * this.ph; for (const b of this.buttons) if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return b.disabled ? null : b; return null; }
   button(id, x, y, w, h, label, o = {}) {
     const g = this.g, hov = this.hover === id && !o.disabled;
     let bg = '#fff', fg = INK, bd = LINE;
     if (o.on) { bg = o.onColor || INK; fg = '#fff'; bd = bg; }
     if (o.accent) { bg = BRASS; fg = '#fff'; bd = BRASS; }
-    if (hov && !o.on && !o.accent) bg = '#fdf3e4';
+    if (o.dark && !o.accent) { bg = '#2a3a4c'; fg = '#fff'; bd = '#4a6078'; }
+    if (hov && !o.on && !o.accent && !o.dark) bg = '#fdf3e4';
     g.globalAlpha = o.disabled ? 0.4 : 1;
     rr(g, x, y, w, h, 16); g.fillStyle = bg; g.fill();
     g.lineWidth = hov ? 8 : 3; g.strokeStyle = hov ? '#e0a040' : bd; g.stroke();
+    if (tutTargets().has(this.name + ':' + id)) { // Tutorial: dieses Element jetzt bedienen
+      g.save(); g.shadowColor = '#ff9a1a'; g.shadowBlur = 26; g.lineWidth = 9; g.strokeStyle = '#ff9a1a'; rr(g, x - 7, y - 7, w + 14, h + 14, 22); g.stroke(); g.restore();
+    }
     g.fillStyle = fg; g.font = o.font || `600 38px ${SANS}`; g.textAlign = 'center'; g.textBaseline = 'middle';
     g.fillText(label, x + w / 2, y + h / 2 + 2); g.textAlign = 'left'; g.globalAlpha = 1;
     this.buttons.push({ id, x, y, w, h, action: o.action, repeat: !!o.repeat, disabled: !!o.disabled });
@@ -472,49 +479,50 @@ function header(g, W, title) {
   g.fillStyle = INK; g.fillRect(0, 0, W, 100);
   g.textBaseline = 'middle'; g.fillStyle = '#fff'; g.font = `700 48px ${SANS}`; g.fillText(title, 36, 52);
 }
-function label(g, t, x, y) { g.font = `500 32px ${SANS}`; g.fillStyle = MUTED; g.textBaseline = 'middle'; g.fillText(t, x, y); }
+function label(g, t, x, y) { g.font = `600 32px ${SANS}`; g.fillStyle = MUTED; g.textBaseline = 'middle'; g.fillText(t, x, y); }
 
 // --- Steuerung (links)
 const ctrl = new Panel('ctrl', 0.64, 0.86, 900, 1210, (g, P) => {
   const W = P.pw;
   header(g, W, 'Steuerung');
-  const chipT = st.sw === 'laden' ? 'Schalter: Laden' : 'Schalter: Messen';
-  g.font = `600 30px ${SANS}`; const cw = g.measureText(chipT).width + 40;
-  rr(g, W - 36 - cw, 28, cw, 48, 24); g.fillStyle = st.sw === 'laden' ? BRASS : '#2f4258'; g.fill();
-  g.fillStyle = '#fff'; g.fillText(chipT, W - 36 - cw + 20, 53);
+  const chipT = st.sw === 'laden' ? 'Laden' : 'Messen';
+  g.font = `700 32px ${SANS}`; const cw = g.measureText(chipT).width + 44;
+  rr(g, W - 36 - cw, 26, cw, 52, 26); g.fillStyle = st.sw === 'laden' ? BRASS : '#3a5878'; g.fill();
+  g.fillStyle = '#fff'; g.fillText(chipT, W - 36 - cw + 22, 53);
+  const sect = (n, t, y) => {
+    g.fillStyle = BRASS; g.beginPath(); g.arc(56, y, 22, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#fff'; g.font = `700 28px ${SANS}`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(n, 56, y + 1); g.textAlign = 'left';
+    g.fillStyle = INK; g.font = `700 36px ${SANS}`; g.fillText(t, 92, y + 1);
+    g.strokeStyle = LINE; g.lineWidth = 2; g.beginPath(); g.moveTo(92 + g.measureText(t).width + 20, y); g.lineTo(W - 36, y); g.stroke();
+  };
   const stepper = (id, lab, val, y, dec, inc) => {
     label(g, lab, 36, y + 24);
-    g.font = `600 56px ${MONO}`; g.fillStyle = INK; g.fillText(val, 36, y + 84);
-    P.button(id + '-', W - 36 - 240 - 16, y + 12, 120, 100, '−', { font: `600 64px ${SANS}`, repeat: true, action: dec });
-    P.button(id + '+', W - 36 - 120, y + 12, 120, 100, '+', { font: `600 64px ${SANS}`, repeat: true, action: inc });
+    g.font = `700 54px ${MONO}`; g.fillStyle = INK; g.fillText(val, 36, y + 76);
+    P.button(id + '-', W - 36 - 230 - 16, y + 6, 115, 92, '−', { font: `600 64px ${SANS}`, repeat: true, action: dec });
+    P.button(id + '+', W - 36 - 115, y + 6, 115, 92, '+', { font: `600 64px ${SANS}`, repeat: true, action: inc });
   };
-  let y = 124;
-  stepper('U', 'Spannung U (Netzgerät)', nf(st.U, 2) + ' kV', y, () => setU(-1), () => setU(1)); y += 132;
-  stepper('d', 'Plattenabstand d', nf(st.d, 1) + ' cm', y, () => setD(-1), () => setD(1)); y += 132;
-  label(g, 'Plattenradius r in cm', 36, y + 18);
-  g.textAlign = 'right'; g.font = `500 32px ${MONO}`; g.fillStyle = INK; g.fillText('A = ' + nf(Math.PI * st.r * st.r, 0) + ' cm²', W - 36, y + 18); g.textAlign = 'left';
+  sect('1', 'Einstellen', 126);
+  stepper('U', 'Spannung U', nf(st.U, 2) + ' kV', 152, () => setU(-1), () => setU(1));
+  stepper('d', 'Plattenabstand d', nf(st.d, 1) + ' cm', 258, () => setD(-1), () => setD(1));
+  label(g, 'Plattenradius r in cm', 36, 382);
+  g.textAlign = 'right'; g.font = `600 32px ${MONO}`; g.fillStyle = INK; g.fillText('A = ' + nf(Math.PI * st.r * st.r, 0) + ' cm²', W - 36, 382); g.textAlign = 'left';
   const rs = [5, 7.5, 10, 12.5, 15], bw = (W - 72 - 4 * 12) / 5;
-  rs.forEach((r, i) => P.button('r' + r, 36 + i * (bw + 12), y + 46, bw, 84, nf(r, r % 1 ? 1 : 0), { on: st.r === r, action: () => setR(r) }));
-  y += 152;
-  label(g, 'Zwischen den Platten', 36, y + 18);
-  g.textAlign = 'right'; g.font = `400 26px ${SANS}`; g.fillStyle = MUTED; g.fillText('Isolierplatte 1,0 cm dick', W - 36, y + 18); g.textAlign = 'left';
+  rs.forEach((r, i) => P.button('r' + r, 36 + i * (bw + 12), 406, bw, 78, nf(r, r % 1 ? 1 : 0), { on: st.r === r, font: `600 38px ${SANS}`, action: () => setR(r) }));
+  label(g, 'Zwischen den Platten', 36, 516);
   const meds = ['air', 'plexi', 'glass'], mw = (W - 72 - 24) / 3;
-  meds.forEach((m, i) => P.button('m' + m, 36 + i * (mw + 12), y + 46, mw, 84, MEDIA[m].name, { on: st.med === m, action: () => setMed(m) }));
-  y += 152;
-  label(g, 'Umschalter (auch am Tisch antippbar)', 36, y + 18);
+  meds.forEach((m, i) => P.button('m' + m, 36 + i * (mw + 12), 540, mw, 78, MEDIA[m].name, { on: st.med === m, font: `600 36px ${SANS}`, action: () => setMed(m) }));
+  sect('2', 'Laden und messen', 660);
   const sw2 = (W - 72 - 12) / 2;
-  P.button('swL', 36, y + 46, sw2, 100, 'Laden', { on: st.sw === 'laden', onColor: BRASS, font: `700 42px ${SANS}`, action: () => setSwitch('laden') });
-  P.button('swM', 36 + sw2 + 12, y + 46, sw2, 100, 'Messen', { on: st.sw === 'messen', font: `700 42px ${SANS}`, action: () => setSwitch('messen') });
-  y += 166;
-  P.button('save', 36, y, W - 72 - 12 - 250, 100, 'Messwert speichern', { accent: true, font: `700 40px ${SANS}`, action: saveMeasurement });
-  P.button('null', W - 36 - 250, y, 250, 100, 'Nullen', { action: nullMeter });
-  y += 124;
+  P.button('swL', 36, 690, sw2, 100, 'Laden', { on: st.sw === 'laden', onColor: BRASS, font: `700 44px ${SANS}`, action: () => setSwitch('laden') });
+  P.button('swM', 36 + sw2 + 12, 690, sw2, 100, 'Messen', { on: st.sw === 'messen', onColor: '#3a5878', font: `700 44px ${SANS}`, action: () => setSwitch('messen') });
+  sect('3', 'Speichern', 830);
+  P.button('save', 36, 858, W - 72 - 12 - 240, 96, 'Messwert speichern', { accent: true, font: `700 40px ${SANS}`, action: saveMeasurement });
+  P.button('null', W - 36 - 240, 858, 240, 96, 'Nullen', { font: `600 38px ${SANS}`, action: nullMeter });
   const hw = (W - 72 - 12) / 2;
-  P.button('real', 36, y, hw, 80, 'Randfeld: ' + (st.real ? 'an' : 'aus'), { on: st.real, onColor: '#2f4258', font: `600 32px ${SANS}`, action: toggleReal });
-  P.button('el', 36 + hw + 12, y, hw, 80, 'Elektronen: ' + (st.eShow ? 'an' : 'aus'), { on: st.eShow, onColor: '#2560c4', font: `600 32px ${SANS}`, action: toggleElectrons });
-  y += 112;
-  g.font = `400 27px ${SANS}`; g.fillStyle = MUTED;
-  wrap(g, 'Modell in Zeitlupe: 1 blaue Kugel ≙ 2 nC ≈ 12 Mrd. Elektronen. „+“ = Atomrumpf, dem ein Elektron fehlt. Gespeichert wird C = Q/U.', 36, y, W - 72, 36, 3);
+  P.button('real', 36, 984, hw, 72, 'Randfeld: ' + (st.real ? 'an' : 'aus'), { on: st.real, onColor: '#3a5878', font: `600 32px ${SANS}`, action: toggleReal });
+  P.button('el', 36 + hw + 12, 984, hw, 72, 'Elektronen: ' + (st.eShow ? 'an' : 'aus'), { on: st.eShow, onColor: '#2560c4', font: `600 32px ${SANS}`, action: toggleElectrons });
+  g.font = `500 28px ${SANS}`; g.fillStyle = MUTED; g.textBaseline = 'middle';
+  wrap(g, 'Zeitlupe: 1 blaue Kugel ≙ 2 nC. „+“ = Atomrumpf ohne Elektron.', 36, 1100, W - 72, 36, 2);
 });
 ctrl.group.position.set(-0.98, 1.52, -0.48); ctrl.group.rotation.y = 1.02; world.add(ctrl.group);
 
@@ -522,7 +530,7 @@ ctrl.group.position.set(-0.98, 1.52, -0.48); ctrl.group.rotation.y = 1.02; world
 function niceMax(x) { if (!(x > 0)) return 1; const e = 10 ** Math.floor(Math.log10(x)); for (const m of [1, 2, 2.5, 5, 10]) if (x <= m * e * 1.0000001) return m * e; return 10 * e; }
 const tickFmt = (val, step) => nf(val, step >= 1 ? 0 : step >= 0.1 ? 1 : 2);
 function axes(g, b, xmax, ymax, xl, yl, xTicks = true) {
-  g.font = `400 24px ${MONO}`; g.fillStyle = MUTED; g.strokeStyle = LINE; g.lineWidth = 2; g.textBaseline = 'middle';
+  g.font = `500 27px ${MONO}`; g.fillStyle = MUTED; g.strokeStyle = LINE; g.lineWidth = 2; g.textBaseline = 'middle';
   for (let i = 0; i <= 5; i++) {
     const y = b.y + b.h * (1 - i / 5);
     g.beginPath(); g.moveTo(b.x, y); g.lineTo(b.x + b.w, y); g.stroke();
@@ -530,8 +538,8 @@ function axes(g, b, xmax, ymax, xl, yl, xTicks = true) {
     if (xTicks) { const x = b.x + b.w * i / 5; g.textAlign = 'center'; g.fillText(tickFmt(xmax * i / 5, xmax / 5), x, b.y + b.h + 28); g.beginPath(); g.moveTo(x, b.y + b.h); g.lineTo(x, b.y + b.h + 8); g.stroke(); }
   }
   g.strokeStyle = INK; g.lineWidth = 3; g.beginPath(); g.moveTo(b.x, b.y); g.lineTo(b.x, b.y + b.h); g.lineTo(b.x + b.w, b.y + b.h); g.stroke();
-  g.font = `600 26px ${SANS}`; g.fillStyle = INK; g.textAlign = 'left'; g.fillText(yl, b.x - 90, b.y - 22);
-  g.textAlign = 'right'; g.fillText(xl, b.x + b.w, b.y + b.h + 64); g.textAlign = 'left';
+  g.font = `700 29px ${SANS}`; g.fillStyle = INK; g.textAlign = 'left'; g.fillText(yl, b.x - 100, b.y - 24);
+  g.textAlign = 'right'; g.fillText(xl, b.x + b.w, b.y + b.h + 70); g.textAlign = 'left';
 }
 function linFit(pts) {
   const n = pts.length; if (n < 2) return null;
@@ -555,7 +563,7 @@ function plotXY(g, b, pts, o) {
   if (o.line) { g.beginPath(); g.moveTo(X(0), Y(o.line.b)); g.lineTo(X(xmax), Y(o.line.b + o.line.m * xmax)); g.stroke(); }
   if (o.hyper) { g.beginPath(); for (let i = 0; i <= 80; i++) { const x = xmax * (0.02 + 0.98 * i / 80), y = o.hyper / x; i ? g.lineTo(X(x), Y(y)) : g.moveTo(X(x), Y(y)); } g.stroke(); }
   g.setLineDash([]); g.restore();
-  for (const p of pts) { g.beginPath(); g.arc(X(p.x), Y(p.y), 10, 0, Math.PI * 2); g.fillStyle = '#e0a040'; g.fill(); g.lineWidth = 3; g.strokeStyle = INK; g.stroke(); }
+  for (const p of pts) { g.beginPath(); g.arc(X(p.x), Y(p.y), 12, 0, Math.PI * 2); g.fillStyle = '#e0a040'; g.fill(); g.lineWidth = 3; g.strokeStyle = INK; g.stroke(); }
   if (!pts.length) { g.fillStyle = MUTED; g.font = `500 32px ${SANS}`; g.textAlign = 'center'; g.fillText('Noch keine Messwerte', b.x + b.w / 2, b.y + b.h / 2); g.textAlign = 'left'; }
 }
 function airRef(s) { const a = s.filter(p => p.med === 'air'); return a.length ? a.reduce((x, p) => x + p.C, 0) / a.length : null; }
@@ -563,11 +571,11 @@ function airRef(s) { const a = s.filter(p => p.med === 'air'); return a.length ?
 const graph = new Panel('graph', 0.72, 0.86, 1000, 1194, (g, P) => {
   const W = P.pw, s = series[st.mode];
   header(g, W, 'Messreihe');
-  g.font = `600 30px ${SANS}`; g.textAlign = 'right'; g.fillStyle = '#c9d2dc'; g.fillText(s.length + ' / 12 Werte', W - 36, 53); g.textAlign = 'left';
+  g.font = `600 32px ${SANS}`; g.textAlign = 'right'; g.fillStyle = '#dfe6ee'; g.fillText(s.length + ' / 12 Werte', W - 36, 53); g.textAlign = 'left';
   const keys = ['QU', 'Cd', 'CA', 'Ce'], tw = (W - 60 - 36) / 4;
-  keys.forEach((k, i) => P.button('t' + k, 30 + i * (tw + 12), 118, tw, 80, MODES[k].tab, { on: st.mode === k, font: `700 38px ${SANS}`, action: () => setMode(k) }));
-  g.font = `400 28px ${SANS}`; g.fillStyle = MUTED; wrap(g, MODES[st.mode].hint, 30, 236, W - 60, 34, 2);
-  const b = { x: 130, y: 320, w: W - 175, h: 320 };
+  keys.forEach((k, i) => P.button('t' + k, 30 + i * (tw + 12), 116, tw, 84, MODES[k].tab, { on: st.mode === k, font: `700 42px ${SANS}`, action: () => setMode(k) }));
+  g.font = `500 30px ${SANS}`; g.fillStyle = MUTED; g.textBaseline = 'middle'; wrap(g, MODES[st.mode].hint, 30, 240, W - 60, 38, 2);
+  const b = { x: 140, y: 336, w: W - 185, h: 296 };
   let fitText = '';
   if (st.mode === 'QU') {
     const pts = s.map(p => ({ x: p.U, y: p.Q })), f = originFit(pts);
@@ -586,8 +594,8 @@ const graph = new Panel('graph', 0.72, 0.86, 1000, 1194, (g, P) => {
       plotXY(g, b, pts, { xl: 'd in cm', yl: 'C in pF', xDef: 5, yDef: 20, hyper: s.length >= 2 ? k : null });
       fitText = s.length >= 2 ? `Hyperbel C = k/d mit C·d ≈ ${nf(k, 1)} pF·cm. Ist C·d in der Tabelle konstant? Prüfe auch x = 1/d.` : 'Miss bei mehreren Abständen, z. B. 1, 2, 3, 4 und 6 cm.';
     }
-    P.button('xd', 30, 690, 170, 62, 'x = d', { on: !st.xInv, font: `600 30px ${SANS}`, action: () => { st.xInv = false; } });
-    P.button('xi', 212, 690, 170, 62, 'x = 1/d', { on: st.xInv, font: `600 30px ${SANS}`, action: () => { st.xInv = true; } });
+    P.button('xd', 30, 682, 180, 66, 'x = d', { on: !st.xInv, font: `600 32px ${SANS}`, action: () => { st.xInv = false; } });
+    P.button('xi', 222, 682, 180, 66, 'x = 1/d', { on: st.xInv, font: `600 32px ${SANS}`, action: () => { st.xInv = true; } });
   } else if (st.mode === 'CA') {
     const pts = s.map(p => ({ x: p.A, y: p.C })), f = linFit(pts);
     plotXY(g, b, pts, { xl: 'A in cm²', yl: 'C in pF', xDef: 700, yDef: 20, line: f });
@@ -616,42 +624,58 @@ const graph = new Panel('graph', 0.72, 0.86, 1000, 1194, (g, P) => {
     fitText = ref ? 'εᵣ = C(Material) / C(Luft) bei gleichem d und A.' : 'Zuerst mit Luft messen: Das ist der Bezugswert für εᵣ = C/C(Luft).';
     if (s.some(p => p.med !== 'air' && p.d > SLAB_T)) fitText += ' Achtung: Bei d > 1 cm ist der Spalt nur teilweise gefüllt.';
   }
-  g.font = `400 28px ${SANS}`; g.fillStyle = INK; wrap(g, fitText, 30, 786, W - 60, 34, 2);
+  g.font = `500 30px ${SANS}`; g.fillStyle = INK; g.textBaseline = 'middle'; wrap(g, fitText, 30, 790, W - 60, 38, 2);
   // Tabelle
   const cols = {
-    QU: [['Nr', 30], ['U in kV', 120], ['Q in nC', 340], ['C = Q/U in pF', 560]],
-    Cd: [['Nr', 30], ['d in cm', 105], ['1/d in 1/cm', 265], ['Q in nC', 470], ['C in pF', 640], ['C·d in pF·cm', 800]],
-    CA: [['Nr', 30], ['r in cm', 105], ['A in cm²', 255], ['Q in nC', 440], ['C in pF', 610], ['C/A pF/cm²', 780]],
-    Ce: [['Nr', 30], ['Material', 105], ['d in cm', 360], ['Q in nC', 510], ['C in pF', 670], ['εᵣ = C/C_L', 830]],
+    QU: [['Nr', 30], ['U in kV', 130], ['Q in nC', 370], ['C = Q/U in pF', 610]],
+    Cd: [['Nr', 30], ['d in cm', 120], ['Q in nC', 320], ['C in pF', 520], ['C·d in pF·cm', 720]],
+    CA: [['Nr', 30], ['A in cm²', 120], ['Q in nC', 320], ['C in pF', 520], ['C/A in pF/cm²', 720]],
+    Ce: [['Nr', 30], ['Material', 120], ['Q in nC', 370], ['C in pF', 560], ['εᵣ', 780]],
   }[st.mode];
   const ref = airRef(s);
   const row = (p, i) => ({
     QU: [i + 1, nf(p.U, 2), nf(p.Q, 1), nf(p.C, 1)],
-    Cd: [i + 1, nf(p.d, 1), nf(1 / p.d, 2), nf(p.Q, 1), nf(p.C, 1), nf(p.C * p.d, 1)],
-    CA: [i + 1, nf(p.r, 1), nf(p.A, 0), nf(p.Q, 1), nf(p.C, 1), nf(p.C / p.A, 3)],
-    Ce: [i + 1, MEDIA[p.med].name, nf(p.d, 1), nf(p.Q, 1), nf(p.C, 1), ref ? nf(p.C / ref, 2) : '–'],
+    Cd: [i + 1, nf(p.d, 1), nf(p.Q, 1), nf(p.C, 1), nf(p.C * p.d, 1)],
+    CA: [i + 1, nf(p.A, 0), nf(p.Q, 1), nf(p.C, 1), nf(p.C / p.A, 3)],
+    Ce: [i + 1, MEDIA[p.med].name, nf(p.Q, 1), nf(p.C, 1), ref ? nf(p.C / ref, 2) : '–'],
   }[st.mode]);
-  g.fillStyle = '#e6eaee'; g.fillRect(20, 846, W - 40, 46);
-  g.font = `700 24px ${SANS}`; g.fillStyle = MUTED; g.textBaseline = 'middle';
-  cols.forEach(([t, x]) => g.fillText(t, x, 870));
-  const start = Math.max(0, s.length - 5);
-  g.font = `500 27px ${MONO}`; g.fillStyle = INK;
-  s.slice(start).forEach((p, j) => { const vals = row(p, start + j); cols.forEach(([, x], k) => g.fillText(String(vals[k]), x, 912 + j * 38)); });
-  if (start > 0) { g.font = `400 22px ${SANS}`; g.fillStyle = MUTED; g.textAlign = 'right'; g.fillText(`(${start} ältere Werte im Diagramm)`, W - 30, 822); g.textAlign = 'left'; }
-  P.button('undo', 30, 1100, (W - 72) / 2, 72, 'Letzten löschen', { disabled: !s.length, font: `600 32px ${SANS}`, action: deleteLast });
-  P.button('clr', 42 + (W - 72) / 2, 1100, (W - 72) / 2, 72, 'Reihe löschen', { disabled: !s.length, font: `600 32px ${SANS}`, action: clearSeries });
+  g.fillStyle = '#dde3e9'; g.fillRect(20, 852, W - 40, 50);
+  g.font = `700 28px ${SANS}`; g.fillStyle = INK; g.textBaseline = 'middle';
+  cols.forEach(([t, x]) => g.fillText(t, x, 878));
+  const start = Math.max(0, s.length - 4);
+  g.font = `600 32px ${MONO}`; g.fillStyle = INK;
+  s.slice(start).forEach((p, j) => { const vals = row(p, start + j); cols.forEach(([, x], k) => g.fillText(String(vals[k]), x, 926 + j * 44)); });
+  if (start > 0) { g.font = `500 24px ${SANS}`; g.fillStyle = MUTED; g.textAlign = 'right'; g.fillText(`+ ${start} ältere im Diagramm`, W - 30, 1092); g.textAlign = 'left'; }
+  P.button('undo', 30, 1108, (W - 72) / 2, 72, 'Letzten löschen', { disabled: !s.length, font: `600 34px ${SANS}`, action: deleteLast });
+  P.button('clr', 42 + (W - 72) / 2, 1108, (W - 72) / 2, 72, 'Reihe löschen', { disabled: !s.length, font: `600 34px ${SANS}`, action: clearSeries });
 });
 graph.group.position.set(1.0, 1.52, -0.48); graph.group.rotation.y = -1.02; world.add(graph.group);
 
-// --- Hinweisband (Mitte)
-const banner = new Panel('banner', 0.78, 0.1, 1560, 200, (g, P) => {
+// --- Tutorial- und Hinweiskarte (Mitte)
+const card = new Panel('card', 0.92, 0.22, 1500, 359, (g, P) => {
   const W = P.pw, H = P.ph;
-  rr(g, 4, 4, W - 8, H - 8, 30); g.fillStyle = st.msgKind === 'warn' ? WARN : st.msgKind === 'ok' ? OKC : INK; g.fill();
-  g.fillStyle = '#fff'; g.font = `500 44px ${SANS}`; g.textBaseline = 'middle';
-  const ls = lines(g, st.msg, W - 80).slice(0, 2), lh = 56, y0 = H / 2 - (ls.length - 1) * lh / 2;
-  ls.forEach((l, i) => g.fillText(l, 40, y0 + i * lh + 2));
-}, false);
-banner.group.position.set(0, 1.5, -1.15); world.add(banner.group);
+  const bg = !tut.on && st.msgKind === 'warn' ? WARN : !tut.on && st.msgKind === 'ok' ? OKC : INK;
+  g.fillStyle = bg; g.fillRect(0, 0, W, H);
+  g.textBaseline = 'middle';
+  if (tut.on) {
+    const S = TUT[tut.i];
+    g.font = `700 32px ${SANS}`; g.fillStyle = '#f5b544'; g.fillText(`Tutorial · Schritt ${tut.i + 1} von ${TUT.length}`, 44, 50);
+    P.button('end', W - 44 - 220, 16, 220, 64, 'Beenden', { dark: true, font: `600 30px ${SANS}`, action: endTutorial });
+    g.fillStyle = '#fff'; g.font = `600 46px ${SANS}`;
+    lines(g, typeof S.t === 'function' ? S.t() : S.t, W - 88).slice(0, 3).forEach((l, i) => g.fillText(l, 44, 128 + i * 58));
+    if (tut.ok) { g.fillStyle = '#86e3a6'; g.font = `700 40px ${SANS}`; g.fillText('✓ erledigt', 44, H - 50); }
+    else if (st.msgKind === 'warn' && performance.now() - st.msgT < 7000) {
+      g.fillStyle = '#ffb59e'; g.font = `600 30px ${SANS}`; g.fillText(lines(g, st.msg, W - 88 - 320)[0] + (lines(g, st.msg, W - 88 - 320).length > 1 ? ' …' : ''), 44, H - 50);
+    }
+    P.button('next', W - 44 - 280, H - 88, 280, 70, S.btn || 'Überspringen', { accent: !!S.btn, dark: !S.btn, font: `700 32px ${SANS}`, action: nextStep });
+  } else {
+    g.fillStyle = '#fff'; g.font = `600 46px ${SANS}`;
+    const ls = lines(g, st.msg, W - 88 - 330).slice(0, 4), lh = 58;
+    ls.forEach((l, i) => g.fillText(l, 44, H / 2 - (ls.length - 1) * lh / 2 + i * lh));
+    P.button('tut', W - 44 - 290, H / 2 - 42, 290, 84, 'Tutorial', { dark: true, font: `700 36px ${SANS}`, action: startTutorial });
+  }
+});
+card.group.position.set(0, 1.58, -1.2); world.add(card.group);
 
 // --- 3D-Bedienelemente am Tisch
 function objTarget(key, action, hlMesh, pickR, parent, pos) {
@@ -663,7 +687,7 @@ objTarget('lever', () => setSwitch(st.sw === 'laden' ? 'messen' : 'laden'), leve
 objTarget('null', nullMeter, nullBtn, 0.035, meter, v(0.08, 0.04, 0.11));
 
 // ------------------------------------------------------------ Aktionen
-function say(t, kind = '') { st.msg = t; st.msgKind = kind; banner.dirty = true; }
+function say(t, kind = '') { st.msg = t; st.msgKind = kind; st.msgT = performance.now(); card.dirty = true; if (kind === 'warn') setTimeout(() => { card.dirty = true; }, 7100); }
 const dirtyAll = () => panels.forEach(p => { p.dirty = true; });
 function setU(dir) {
   const n = clamp(Math.round((st.U + dir * 0.5) * 2) / 2, 0.5, 5);
@@ -1064,8 +1088,61 @@ function resize() {
 addEventListener('resize', resize);
 addEventListener('orientationchange', () => setTimeout(resize, 200));
 
+// ------------------------------------------------------------ Tutorial: zwei Messwerte für C(d)
+const tut = { on: false, i: 0, ok: false, okT: 0, base: 0 };
+const isCharged = () => (st.sw === 'laden' && st.fullSaid) || (st.sw === 'messen' && st.Qm > 0.05);
+const TUT = [
+  { t: 'Willkommen! In diesem Tutorial nimmst du zwei Messwerte auf und findest heraus, wie die Kapazität C vom Plattenabstand d abhängt.', btn: 'Los geht’s' },
+  { t: 'Links ist die Steuerung, rechts die Messreihe, vor dir der Versuchsaufbau. Wähle rechts die Messreihe „C(d)“.', target: ['graph:tCd'], done: () => st.mode === 'Cd' },
+  { t: 'Messwert 1: Stelle links in der Steuerung mit − und + den Abstand d = 2,0 cm ein.', target: ['ctrl:d-', 'ctrl:d+'], obj: 'cap', done: () => st.d === 2 },
+  { t: 'Schalte auf „Laden“ – links in der Steuerung oder am Umschalter auf dem Tisch.', target: ['ctrl:swL'], obj: 'lever', done: () => st.sw === 'laden' },
+  { t: 'Schau auf den Kondensator: Elektronen werden von der linken auf die rechte Platte geschoben. Warte, bis keine mehr fließen.', obj: 'cap', done: isCharged },
+  { t: 'Schalte jetzt auf „Messen“. Die Elektronen fließen über den Messverstärker zurück, er misst die Ladung Q.', target: ['ctrl:swM'], obj: 'lever', done: () => st.sw === 'messen' && st.Qm > 0.05 },
+  { t: 'Lies Q am Messverstärker ab. Tippe dann links auf „Messwert speichern“ – gespeichert wird C = Q/U.', target: ['ctrl:save'], obj: 'meter', done: () => series.Cd.length > tut.base },
+  { t: 'Messwert 2: Verdopple den Abstand. Stelle d = 4,0 cm ein.', target: ['ctrl:d-', 'ctrl:d+'], obj: 'cap', done: () => st.d === 4 },
+  { t: 'Wieder auf „Laden“ schalten.', target: ['ctrl:swL'], obj: 'lever', done: () => st.sw === 'laden' },
+  { t: 'Warte, bis keine Elektronen mehr fließen.', obj: 'cap', done: isCharged },
+  { t: 'Auf „Messen“ schalten und Q am Messverstärker ablesen.', target: ['ctrl:swM'], obj: 'lever', done: () => st.sw === 'messen' && st.Qm > 0.05 },
+  { t: 'Tippe auf „Messwert speichern“.', target: ['ctrl:save'], obj: 'meter', done: () => series.Cd.length > tut.base + 1 },
+  { t: () => { const s = series.Cd, a = s[s.length - 2], b = s[s.length - 1];
+      return a && b ? `Vergleiche rechts: Bei d = ${nf(a.d)} cm ist C ≈ ${nf(a.C)} pF, bei d = ${nf(b.d)} cm nur ${nf(b.C)} pF. Doppelter Abstand → halbe Kapazität: C ~ 1/d.` : 'Vergleiche rechts die beiden Messwerte.'; }, btn: 'Weiter' },
+  { t: 'Tipp: Mit „x = 1/d“ wird aus der Kurve eine Gerade. Nimm weitere Abstände auf oder probiere die anderen Messreihen aus!', target: ['graph:xi'], btn: 'Fertig' },
+];
+const NO_TARGETS = new Set();
+let tutSet = NO_TARGETS, tutSetI = -1;
+function tutTargets() {
+  if (typeof tut === 'undefined' || !tut.on) return NO_TARGETS;
+  if (tutSetI !== tut.i) { tutSet = new Set(TUT[tut.i].target || []); tutSetI = tut.i; }
+  return tutSet;
+}
+function startTutorial() {
+  tut.on = true; tut.i = 0; tut.ok = false; tut.base = series.Cd.length;
+  st.Qm = 0; st.meter = null; st.msgKind = '';
+  dirtyAll(); try { localStorage.setItem('kondLabTut', '1'); } catch (e) {}
+}
+function endTutorial() { tut.on = false; say('Tutorial beendet. Über „Tutorial“ kannst du es jederzeit neu starten.'); dirtyAll(); }
+function nextStep() { if (tut.i >= TUT.length - 1) { endTutorial(); return; } tut.i++; tut.ok = false; st.msgKind = ''; dirtyAll(); }
+// Pfeil über dem Gerät, das gerade wichtig ist
+const arrow = flat(mesh(new THREE.ConeGeometry(0.022, 0.05, 20), new THREE.MeshStandardMaterial({ color: 0xff9a1a, emissive: 0xff7a00, emissiveIntensity: 0.6 })));
+arrow.rotation.x = Math.PI; world.add(arrow);
+let tutClock = 0;
+function updateTutorial(dt) {
+  tutClock += dt;
+  const S = tut.on ? TUT[tut.i] : null;
+  arrow.visible = !!(S && S.obj && !tut.ok);
+  if (arrow.visible) {
+    const pos = S.obj === 'lever' ? v(-0.3, 1.15, -0.68) : S.obj === 'meter' ? v(0.52, 1.2, -1.0) : dSprite.position.clone().add(v(0, 0.075, 0));
+    arrow.position.copy(pos); arrow.position.y += Math.sin(tutClock * 4) * 0.012;
+  }
+  if (!S) return;
+  if (!tut.ok && S.done && S.done()) { tut.ok = true; tut.okT = 1.0; blip(1180); card.dirty = true; }
+  if (tut.ok) { tut.okT -= dt; if (tut.okT <= 0) nextStep(); }
+}
+$('#btnTut').addEventListener('click', () => { ensureAudio(); startTutorial(); });
+
 // ------------------------------------------------------------ Start
 st.U = 1.0;
+try { if (!localStorage.getItem('kondLabTut')) startTutorial(); } catch (e) { startTutorial(); }
 plateL.setR(st.r); plateR.setR(st.r);
 applyGeometry(false);
 resize();
@@ -1075,6 +1152,8 @@ renderer.setAnimationLoop(() => {
   updateOrientation();
   updateInteraction(dt);
   updateVisuals(dt);
+  updateTutorial(dt);
+  faceViewer();
   for (const p of panels) if (p.dirty) p.render();
   if (mode === 'stereo') stereo.render(scene, camera); else renderer.render(scene, camera);
 });
